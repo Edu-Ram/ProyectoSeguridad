@@ -1,500 +1,523 @@
 import os
 import psutil
-import win32evtlog
-import win32evtlogutil
-import win32con
-import win32api
 import time
 import threading
 import tkinter as tk
 from tkinter import messagebox, scrolledtext
-from collections import defaultdict, deque
+from collections import deque
 from datetime import datetime, timedelta
-import json
 import hashlib
 from pathlib import Path
-import wmi
+import queue
 
 
-class RansomwareDetector:
+class OptimizedRansomwareDetector:
     def __init__(self):
         self.is_monitoring = False
         self.detected_processes = set()
-        self.file_activity_log = defaultdict(lambda: deque(maxlen=100))
-        self.suspicious_extensions = [
-            '.locked', '.encrypted', '.crypto', '.vault']
         self.monitoring_thread = None
-        self.wmi_client = wmi.WMI()
+        self.event_queue = queue.Queue()
 
-        # Umbrales de detección
-        # archivos modificados en ventana de tiempo
-        self.RAPID_FILE_CHANGES_THRESHOLD = 10
-        self.TIME_WINDOW_SECONDS = 30  # ventana de tiempo para detectar actividad sospechosa
-        # Cambio mínimo en tamaño de archivo (porcentaje)
-        self.MIN_FILE_SIZE_CHANGE = 0.1
+        # Configuración optimizada
+        # Escaneo cada 1 segundo (más rápido que el atacante)
+        self.SCAN_INTERVAL = 1.0
+        self.SUSPICIOUS_FILE_THRESHOLD = 3  # Archivos .locked para alertar
+        self.HIGH_CPU_THRESHOLD = 15.0  # % CPU sospechoso para procesos Python
+        self.MAX_LOG_ENTRIES = 200  # Limitar logs para mejor rendimiento
 
-        # Cola para almacenar eventos recientes
-        self.recent_events = deque(maxlen=1000)
+        # Extensiones sospechosas prioritarias
+        self.ransomware_extensions = [
+            '.locked', '.encrypted', '.crypto', '.vault']
 
-        # GUI
-        self.setup_gui()
+        # Directorios monitoreados (optimizado para sandbox)
+        self.monitored_dirs = [
+            Path(r"C:\ransom_sandbox"),  # Tu directorio de pruebas
+            Path.home() / "Desktop",      # Solo Desktop del usuario
+            Path.home() / "Documents"     # Solo Documents del usuario
+        ]
 
-    def setup_gui(self):
-        """Configura la interfaz gráfica"""
+        # Buffer de eventos ligero
+        self.recent_events = deque(maxlen=50)
+
+        # Setup GUI optimizado
+        self.setup_lightweight_gui()
+
+        # Auto-inicio del monitoreo
+        self.root.after(1000, self.start_monitoring)
+
+    def setup_lightweight_gui(self):
+        """GUI simplificada para mejor rendimiento"""
         self.root = tk.Tk()
-        self.root.title("Sistema de Detección Autónoma de Ransomware")
-        self.root.geometry("900x700")
-        self.root.configure(bg="#2c3e50")
+        self.root.title("Detector Ransomware v2.0 - Optimizado")
+        self.root.geometry("800x500")
+        self.root.configure(bg="#1e1e1e")
 
-        # Marco principal
-        main_frame = tk.Frame(self.root, bg="#2c3e50")
-        main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        # Header
+        header = tk.Frame(self.root, bg="#2d2d2d", height=60)
+        header.pack(fill=tk.X, padx=5, pady=5)
+        header.pack_propagate(False)
 
-        # Título
-        title_label = tk.Label(
-            main_frame,
-            text="🛡️ DETECTOR DE RANSOMWARE AUTÓNOMO",
-            font=("Arial", 18, "bold"),
-            fg="#ecf0f1",
-            bg="#2c3e50"
-        )
-        title_label.pack(pady=10)
+        tk.Label(
+            header,
+            text="🛡️ DETECTOR RANSOMWARE OPTIMIZADO",
+            font=("Segoe UI", 16, "bold"),
+            fg="#00ff88",
+            bg="#2d2d2d"
+        ).pack(pady=15)
 
-        # Estado del sistema
-        self.status_frame = tk.Frame(
-            main_frame, bg="#34495e", relief=tk.RAISED, bd=2)
-        self.status_frame.pack(fill=tk.X, pady=5)
+        # Status bar
+        self.status_frame = tk.Frame(self.root, bg="#404040", height=40)
+        self.status_frame.pack(fill=tk.X, padx=5, pady=2)
+        self.status_frame.pack_propagate(False)
 
         self.status_label = tk.Label(
             self.status_frame,
-            text="🔴 SISTEMA DETENIDO",
-            font=("Arial", 14, "bold"),
-            fg="#e74c3c",
-            bg="#34495e"
+            text="🔴 PREPARANDO SISTEMA...",
+            font=("Segoe UI", 10, "bold"),
+            fg="#ff4444",
+            bg="#404040"
         )
-        self.status_label.pack(pady=10)
+        self.status_label.pack(pady=8)
 
-        # Botones de control
-        button_frame = tk.Frame(main_frame, bg="#2c3e50")
-        button_frame.pack(fill=tk.X, pady=10)
+        # Control buttons
+        btn_frame = tk.Frame(self.root, bg="#1e1e1e")
+        btn_frame.pack(fill=tk.X, padx=5, pady=5)
 
-        self.start_button = tk.Button(
-            button_frame,
-            text="🚀 INICIAR MONITOREO",
-            font=("Arial", 12, "bold"),
-            bg="#27ae60",
+        self.start_btn = tk.Button(
+            btn_frame,
+            text="▶ INICIAR",
+            font=("Segoe UI", 10, "bold"),
+            bg="#28a745",
             fg="white",
+            command=self.start_monitoring,
             relief=tk.FLAT,
-            padx=20,
-            pady=10,
-            command=self.start_monitoring
+            padx=15
         )
-        self.start_button.pack(side=tk.LEFT, padx=5)
+        self.start_btn.pack(side=tk.LEFT, padx=5)
 
-        self.stop_button = tk.Button(
-            button_frame,
-            text="⏹️ DETENER MONITOREO",
-            font=("Arial", 12, "bold"),
-            bg="#e74c3c",
+        self.stop_btn = tk.Button(
+            btn_frame,
+            text="⏹ DETENER",
+            font=("Segoe UI", 10, "bold"),
+            bg="#dc3545",
             fg="white",
+            command=self.stop_monitoring,
             relief=tk.FLAT,
-            padx=20,
-            pady=10,
-            command=self.stop_monitoring
+            padx=15
         )
-        self.stop_button.pack(side=tk.LEFT, padx=5)
+        self.stop_btn.pack(side=tk.LEFT, padx=5)
 
-        # Estadísticas
-        stats_frame = tk.Frame(main_frame, bg="#34495e",
-                               relief=tk.RAISED, bd=2)
-        stats_frame.pack(fill=tk.X, pady=5)
+        # Stats (simplified)
+        stats_frame = tk.Frame(self.root, bg="#2d2d2d")
+        stats_frame.pack(fill=tk.X, padx=5, pady=2)
 
-        tk.Label(
+        self.stats_label = tk.Label(
             stats_frame,
-            text="📊 ESTADÍSTICAS DEL SISTEMA",
-            font=("Arial", 12, "bold"),
-            fg="#ecf0f1",
-            bg="#34495e"
-        ).pack(pady=5)
-
-        self.stats_text = tk.Text(
-            stats_frame,
-            height=4,
-            font=("Consolas", 10),
-            bg="#2c3e50",
-            fg="#ecf0f1",
-            relief=tk.FLAT
+            text="Archivos monitoreados: 0 | Procesos escaneados: 0 | Amenazas: 0",
+            font=("Segoe UI", 9),
+            fg="#cccccc",
+            bg="#2d2d2d"
         )
-        self.stats_text.pack(fill=tk.X, padx=10, pady=5)
+        self.stats_label.pack(pady=5)
 
-        # Log de eventos
-        log_frame = tk.Frame(main_frame, bg="#34495e", relief=tk.RAISED, bd=2)
-        log_frame.pack(fill=tk.BOTH, expand=True, pady=5)
+        # Log area (optimized)
+        log_frame = tk.Frame(self.root, bg="#2d2d2d")
+        log_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
 
         tk.Label(
             log_frame,
-            text="📋 LOG DE EVENTOS Y DETECCIONES",
-            font=("Arial", 12, "bold"),
-            fg="#ecf0f1",
-            bg="#34495e"
-        ).pack(pady=5)
+            text="📋 LOG DE DETECCIÓN",
+            font=("Segoe UI", 11, "bold"),
+            fg="#ffffff",
+            bg="#2d2d2d"
+        ).pack(anchor=tk.W, pady=(5, 2))
 
         self.log_text = scrolledtext.ScrolledText(
             log_frame,
             font=("Consolas", 9),
-            bg="#1c2833",
-            fg="#ecf0f1",
+            bg="#0d1117",
+            fg="#f0f6fc",
             relief=tk.FLAT,
-            wrap=tk.WORD
+            wrap=tk.WORD,
+            height=15
         )
-        self.log_text.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        self.log_text.pack(fill=tk.BOTH, expand=True)
 
-        # Inicializar logs
-        self.log_event("🔧 Sistema de detección inicializado", "INFO")
-        self.update_stats()
+        self.log_event(
+            "🔧 Sistema optimizado inicializado - Listo para detectar amenazas")
 
     def log_event(self, message, level="INFO"):
-        """Registra un evento en el log con timestamp"""
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        """Sistema de logging optimizado"""
+        timestamp = datetime.now().strftime("%H:%M:%S")
 
-        # Colores por nivel
-        colors = {
-            "INFO": "#3498db",
-            "WARNING": "#f39c12",
-            "ERROR": "#e74c3c",
-            "CRITICAL": "#8e44ad",
-            "SUCCESS": "#27ae60"
+        # Emoji por nivel para identificación rápida
+        emojis = {
+            "INFO": "ℹ️",
+            "WARNING": "⚠️",
+            "ERROR": "❌",
+            "CRITICAL": "🚨",
+            "SUCCESS": "✅"
         }
 
-        log_entry = f"[{timestamp}] [{level}] {message}\n"
+        emoji = emojis.get(level, "📝")
+        log_entry = f"[{timestamp}] {emoji} {message}\n"
 
+        # Añadir al log con límite
         self.log_text.insert(tk.END, log_entry)
-        self.log_text.see(tk.END)
-        self.root.update_idletasks()
 
-        # Guardar en cola de eventos recientes
+        # Mantener solo las últimas entradas para rendimiento
+        lines = int(self.log_text.index('end-1c').split('.')[0])
+        if lines > self.MAX_LOG_ENTRIES:
+            self.log_text.delete("1.0", f"{lines - self.MAX_LOG_ENTRIES}.0")
+
+        self.log_text.see(tk.END)
+
+        # Agregar a eventos recientes
         self.recent_events.append({
             'timestamp': datetime.now(),
             'level': level,
             'message': message
         })
 
-    def update_stats(self):
-        """Actualiza las estadísticas del sistema"""
-        if hasattr(self, 'stats_text'):
-            self.stats_text.delete(1.0, tk.END)
-
-            stats = f"""Procesos monitoreados: {len([p for p in psutil.process_iter()])}
-Eventos recientes: {len(self.recent_events)}
-Procesos sospechosos detectados: {len(self.detected_processes)}
-Estado: {'🟢 ACTIVO' if self.is_monitoring else '🔴 INACTIVO'}"""
-
-            self.stats_text.insert(1.0, stats)
-
     def start_monitoring(self):
-        """Inicia el monitoreo del sistema"""
+        """Iniciar monitoreo optimizado"""
         if not self.is_monitoring:
             self.is_monitoring = True
             self.status_label.config(
-                text="🟢 SISTEMA ACTIVO - MONITOREANDO", fg="#27ae60")
+                text="🟢 SISTEMA ACTIVO - MONITOREANDO AMENAZAS",
+                fg="#00ff88"
+            )
             self.log_event(
-                "🚀 Monitoreo iniciado - Escaneando sistema cada 2 segundos", "SUCCESS")
+                "🚀 Monitoreo activo - Escaneando cada segundo", "SUCCESS")
 
-            # Iniciar hilo de monitoreo
+            # Thread optimizado para monitoreo
             self.monitoring_thread = threading.Thread(
-                target=self.monitor_system, daemon=True)
+                target=self.optimized_monitor_loop,
+                daemon=True
+            )
             self.monitoring_thread.start()
 
-            # Actualizar estadísticas periódicamente
-            self.update_stats_loop()
+            # Update stats every 2 seconds
+            self.update_ui_loop()
 
     def stop_monitoring(self):
-        """Detiene el monitoreo del sistema"""
+        """Detener monitoreo"""
         self.is_monitoring = False
-        self.status_label.config(text="🔴 SISTEMA DETENIDO", fg="#e74c3c")
-        self.log_event("⏹️ Monitoreo detenido por el usuario", "WARNING")
-        self.update_stats()
+        self.status_label.config(
+            text="🔴 SISTEMA DETENIDO",
+            fg="#ff4444"
+        )
+        self.log_event("⏹️ Monitoreo detenido", "WARNING")
 
-    def update_stats_loop(self):
-        """Loop para actualizar estadísticas periódicamente"""
-        if self.is_monitoring:
-            self.update_stats()
-            # Actualizar cada 2 segundos
-            self.root.after(2000, self.update_stats_loop)
+    def optimized_monitor_loop(self):
+        """Loop principal optimizado - Detecta más rápido que el atacante"""
+        self.log_event("🔍 Iniciando detección de alta velocidad")
 
-    def monitor_system(self):
-        """Hilo principal de monitoreo del sistema"""
-        self.log_event(
-            "🔍 Iniciando monitoreo continuo de archivos y procesos", "INFO")
+        # Baseline inicial
+        baseline_files = self.scan_for_encrypted_files()
+        suspicious_processes = set()  # PIDs de procesos sospechosos
 
         while self.is_monitoring:
             try:
-                # Monitorear logs de Windows
-                self.check_windows_logs()
+                # 1. DETECCIÓN RÁPIDA DE ARCHIVOS CIFRADOS
+                current_encrypted = self.scan_for_encrypted_files()
+                new_encrypted = current_encrypted - baseline_files
 
-                # Monitorear procesos sospechosos
-                self.monitor_processes()
+                if new_encrypted:
+                    self.log_event(
+                        f"🚨 {len(new_encrypted)} ARCHIVOS CIFRADOS DETECTADOS!", "CRITICAL")
+                    self.handle_encryption_detected(new_encrypted)
+                    baseline_files = current_encrypted
 
-                # Verificar patrones de comportamiento
-                self.analyze_suspicious_patterns()
+                # 2. MONITOREO DE PROCESOS CON ACTIVIDAD SOSPECHOSA
+                current_suspicious_procs = self.get_suspicious_processes()
+                new_procs = current_suspicious_procs - suspicious_processes
 
-                # Escanear más rápido que el ransomware (cada 2 segundos vs 5)
-                time.sleep(2)
+                for pid in new_procs:
+                    try:
+                        proc = psutil.Process(pid)
+                        proc_info = {'name': proc.name(), 'pid': pid}
+                        self.log_event(
+                            f"🔍 Proceso con alta CPU: {proc_info['name']} (PID: {pid})", "INFO")
+
+                        # Solo alertar si realmente está cifrando archivos
+                        if self.analyze_process_behavior(pid, proc_info):
+                            self.log_event(
+                                f"🚨 RANSOMWARE CONFIRMADO: {proc_info['name']} (PID: {pid})", "CRITICAL")
+                            self.eliminate_threat(pid, proc_info)
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        continue
+
+                suspicious_processes = current_suspicious_procs
+
+                # Dormir menos tiempo que el atacante (1s vs 5s del atacante)
+                time.sleep(self.SCAN_INTERVAL)
 
             except Exception as e:
                 self.log_event(f"❌ Error en monitoreo: {str(e)}", "ERROR")
-                time.sleep(5)
+                time.sleep(2)
 
-    def check_windows_logs(self):
-        """Monitorea los logs de eventos de Windows para detectar actividad sospechosa"""
-        try:
-            # Monitorear Security Log para cambios en archivos
-            hand = win32evtlog.OpenEventLog(None, "Security")
-            flags = win32evtlog.EVENTLOG_BACKWARDS_READ | win32evtlog.EVENTLOG_SEQUENTIAL_READ
+    def scan_for_encrypted_files(self):
+        """Escaneo ultra-rápido de archivos cifrados"""
+        encrypted_files = set()
 
-            events = win32evtlog.ReadEventLog(hand, flags, 0)
+        for directory in self.monitored_dirs:
+            if not directory.exists():
+                continue
 
-            for event in events[:50]:  # Revisar solo eventos recientes
-                # Event ID 4663: Intento de acceso a objeto (archivos)
-                # Event ID 4656: Handle a un objeto solicitado
-                if event.EventID in [4663, 4656]:
-                    self.analyze_file_access_event(event)
+            try:
+                # Escaneo rápido solo en directorio principal + subdirectorios inmediatos
+                for item in directory.iterdir():
+                    if item.is_file() and any(str(item).endswith(ext) for ext in self.ransomware_extensions):
+                        encrypted_files.add(item)
+                    elif item.is_dir():
+                        # Solo 1 nivel de profundidad para velocidad
+                        try:
+                            for subitem in item.iterdir():
+                                if subitem.is_file() and any(str(subitem).endswith(ext) for ext in self.ransomware_extensions):
+                                    encrypted_files.add(subitem)
+                        except (PermissionError, OSError):
+                            continue
+            except (PermissionError, OSError):
+                continue
 
-            win32evtlog.CloseEventLog(hand)
+        return encrypted_files
 
-        except Exception as e:
-            # Log silencioso ya que puede haber muchos errores de permisos
-            pass
+    def get_suspicious_processes(self):
+        """Obtener procesos con comportamiento sospechoso de cifrado"""
+        suspicious_procs = set()
+        current_pid = os.getpid()  # PID de este detector para excluirlo
 
-    def analyze_file_access_event(self, event):
-        """Analiza eventos de acceso a archivos para detectar patrones sospechosos"""
-        try:
-            # Extraer información del evento
-            event_time = event.TimeGenerated
+        for proc in psutil.process_iter(['pid', 'name', 'cpu_percent']):
+            try:
+                proc_info = proc.info
+                pid = proc_info['pid']
 
-            # Si el evento es muy reciente (últimos 30 segundos)
-            if (datetime.now() - event_time).total_seconds() < 30:
-                # Registrar actividad de archivos reciente
-                self.recent_events.append({
-                    'timestamp': event_time,
-                    'type': 'file_access',
-                    'event_id': event.EventID
-                })
-
-        except Exception as e:
-            pass
-
-    def monitor_processes(self):
-        """Monitorea procesos en busca de comportamiento sospechoso"""
-        try:
-            current_processes = {}
-
-            for proc in psutil.process_iter(['pid', 'name', 'cpu_percent', 'memory_info', 'open_files']):
-                try:
-                    proc_info = proc.info
-                    pid = proc_info['pid']
-                    name = proc_info['name']
-
-                    # Verificar si es un proceso de Python (potencial ransomware)
-                    if 'python' in name.lower():
-                        self.analyze_python_process(proc, proc_info)
-
-                    current_processes[pid] = proc_info
-
-                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                # NUNCA detectar a nosotros mismos
+                if pid == current_pid:
                     continue
 
-        except Exception as e:
-            self.log_event(
-                f"⚠️ Error monitoreando procesos: {str(e)}", "WARNING")
+                # Solo procesos con alta actividad de CPU (indicativo de cifrado)
+                if proc_info['cpu_percent'] > self.HIGH_CPU_THRESHOLD:
+                    suspicious_procs.add(pid)
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
 
-    def analyze_python_process(self, proc, proc_info):
-        """Analiza procesos de Python en busca de actividad sospechosa"""
+        return suspicious_procs
+
+    def analyze_process_behavior(self, pid, proc_info):
+        """Análisis específico de comportamiento de cifrado - NO solo por ser Python"""
+        if pid == os.getpid():  # NUNCA analizarnos a nosotros mismos
+            return False
+
         try:
-            pid = proc_info['pid']
+            proc = psutil.Process(pid)
+            ransomware_score = 0
 
-            # Obtener archivos abiertos por el proceso
+            # 1. Verificar archivos abiertos para cifrado REAL
             try:
                 open_files = proc.open_files()
-
-                # Buscar patrones sospechosos en archivos abiertos
-                suspicious_activity = 0
+                encrypted_files_accessed = 0
+                sandbox_files_accessed = 0
 
                 for file_info in open_files:
-                    file_path = file_info.path.lower()
+                    file_path = str(file_info.path).lower()
 
-                    # Detectar si está accediendo a muchos archivos diferentes
-                    if any(ext in file_path for ext in ['.txt', '.doc', '.pdf', '.jpg', '.png']):
-                        suspicious_activity += 1
+                    # Detectar acceso a archivos en sandbox (fuerte indicador)
+                    if "ransom_sandbox" in file_path:
+                        sandbox_files_accessed += 1
+                        ransomware_score += 5
 
-                    # Detectar extensiones de cifrado
-                    if any(ext in file_path for ext in self.suspicious_extensions):
-                        suspicious_activity += 10
+                    # Detectar archivos .locked (confirmación de ransomware)
+                    if any(ext in file_path for ext in self.ransomware_extensions):
+                        encrypted_files_accessed += 1
+                        ransomware_score += 20  # Puntuación muy alta
                         self.log_event(
-                            f"🚨 ARCHIVO CIFRADO DETECTADO: {file_path}", "CRITICAL")
+                            f"🎯 Acceso a archivo cifrado: {file_path}", "CRITICAL")
 
-                # Si hay actividad sospechosa alta, marcar el proceso
-                if suspicious_activity > 5:
-                    if pid not in self.detected_processes:
-                        self.detected_processes.add(pid)
-                        self.log_event(
-                            f"🔍 Proceso sospechoso detectado: PID {pid} - Actividad: {suspicious_activity}", "WARNING")
-
-                        # Si la actividad es crítica, tomar acción
-                        if suspicious_activity > 15:
-                            self.take_action_against_process(proc, pid)
+                # Log de actividad detectada
+                if sandbox_files_accessed > 0:
+                    self.log_event(
+                        f"📁 Archivos sandbox accedidos: {sandbox_files_accessed}", "WARNING")
+                if encrypted_files_accessed > 0:
+                    self.log_event(
+                        f"🔒 Archivos .locked accedidos: {encrypted_files_accessed}", "CRITICAL")
 
             except (psutil.AccessDenied, psutil.NoSuchProcess):
                 pass
 
-        except Exception as e:
-            pass
+            # 2. Verificar línea de comandos para palabras clave de cifrado
+            try:
+                cmdline = ' '.join(proc.cmdline()).lower()
 
-    def analyze_suspicious_patterns(self):
-        """Analiza patrones generales de comportamiento sospechoso"""
-        now = datetime.now()
-        recent_threshold = now - timedelta(seconds=self.TIME_WINDOW_SECONDS)
+                # Palabras clave específicas de ransomware/cifrado
+                critical_keywords = [
+                    'aesgcm', 'encrypt_file', '.locked', 'ransom_sandbox']
+                warning_keywords = ['encrypt', 'cipher', 'crypto']
 
-        # Contar eventos recientes de diferentes tipos
-        recent_file_events = [
-            e for e in self.recent_events if e['timestamp'] > recent_threshold]
+                for keyword in critical_keywords:
+                    if keyword in cmdline:
+                        ransomware_score += 15
+                        self.log_event(
+                            f"🚨 Palabra clave crítica '{keyword}' en comando", "CRITICAL")
 
-        if len(recent_file_events) > self.RAPID_FILE_CHANGES_THRESHOLD:
-            self.log_event(
-                f"⚠️ PATRÓN SOSPECHOSO: {len(recent_file_events)} eventos de archivos en {self.TIME_WINDOW_SECONDS}s", "WARNING")
+                for keyword in warning_keywords:
+                    if keyword in cmdline:
+                        ransomware_score += 5
+                        self.log_event(
+                            f"⚠️ Palabra clave sospechosa '{keyword}' en comando", "WARNING")
 
-            # Buscar procesos responsables
-            self.investigate_recent_activity()
+            except (psutil.AccessDenied, psutil.NoSuchProcess):
+                pass
 
-    def investigate_recent_activity(self):
-        """Investiga la actividad reciente para identificar procesos responsables"""
-        try:
-            # Buscar procesos de Python activos que podrían ser ransomware
-            for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
-                try:
-                    if 'python' in proc.info['name'].lower():
-                        cmdline = proc.info.get('cmdline', [])
+            # 3. CRITERIO DECISIVO: Solo marcar como ransomware con evidencia sólida
+            # Umbral alto para evitar falsos positivos
+            is_ransomware = ransomware_score >= 20
 
-                        # Buscar indicadores de ransomware en la línea de comandos
-                        cmdline_str = ' '.join(cmdline).lower()
+            if is_ransomware:
+                self.log_event(
+                    f"🎯 RANSOMWARE IDENTIFICADO - PID {pid} - Puntuación: {ransomware_score}", "CRITICAL")
+            elif ransomware_score > 0:
+                self.log_event(
+                    f"🔍 Actividad sospechosa - PID {pid} - Puntuación: {ransomware_score}", "INFO")
 
-                        suspicious_keywords = [
-                            'encrypt', 'cipher', 'aes', 'ransom', 'lock']
-                        if any(keyword in cmdline_str for keyword in suspicious_keywords):
-                            self.log_event(
-                                f"🚨 RANSOMWARE POTENCIAL DETECTADO: PID {proc.info['pid']}", "CRITICAL")
-                            self.take_action_against_process(
-                                proc, proc.info['pid'])
+            return is_ransomware
 
-                except (psutil.NoSuchProcess, psutil.AccessDenied):
+        except psutil.NoSuchProcess:
+            return False
+
+    def handle_encryption_detected(self, encrypted_files):
+        """Manejo cuando se detectan archivos cifrados"""
+        self.log_event(
+            f"🚨 ALERTA CRÍTICA: {len(encrypted_files)} archivos fueron cifrados", "CRITICAL")
+
+        # Mostrar alerta inmediata
+        self.root.after(
+            0, lambda: self.show_ransomware_alert(len(encrypted_files)))
+
+        # Buscar y eliminar proceso responsable
+        self.root.after(100, self.emergency_threat_hunt)
+
+    def emergency_threat_hunt(self):
+        """Búsqueda de emergencia del proceso malicioso"""
+        self.log_event(
+            "🔍 BÚSQUEDA DE EMERGENCIA - Cazando ransomware activo", "CRITICAL")
+        current_pid = os.getpid()
+
+        for proc in psutil.process_iter(['pid', 'name']):
+            try:
+                pid = proc.info['pid']
+                if pid == current_pid:  # Saltarnos a nosotros mismos
                     continue
 
-        except Exception as e:
-            self.log_event(
-                f"❌ Error investigando actividad: {str(e)}", "ERROR")
+                proc_info = {'name': proc.info['name'], 'pid': pid}
+                if self.analyze_process_behavior(pid, proc_info):
+                    self.eliminate_threat(pid, proc_info)
+                    break
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
 
-    def take_action_against_process(self, proc, pid):
-        """Toma acción contra un proceso sospechoso"""
+    def eliminate_threat(self, pid, proc_info):
+        """Eliminación inmediata de amenaza"""
         try:
-            proc_name = proc.name()
+            proc = psutil.Process(pid)
+            proc_name = proc_info.get('name', 'proceso_desconocido')
+
             self.log_event(
-                f"🛡️ INICIANDO CONTENCIÓN DE PROCESO: {proc_name} (PID: {pid})", "CRITICAL")
+                f"🛡️ ELIMINANDO RANSOMWARE: {proc_name} (PID: {pid})", "CRITICAL")
 
-            # Mostrar alerta crítica
-            self.show_critical_alert(proc_name, pid)
+            # Terminación forzada inmediata
+            proc.kill()
 
-            # Intentar terminar el proceso
-            try:
-                proc.terminate()
-                time.sleep(2)
+            self.log_event(
+                f"✅ AMENAZA ELIMINADA: {proc_name} ha sido destruido", "SUCCESS")
 
-                if proc.is_running():
-                    proc.kill()
-
-                self.log_event(
-                    f"✅ PROCESO ELIMINADO EXITOSAMENTE: {proc_name} (PID: {pid})", "SUCCESS")
-
-                # Mostrar notificación de éxito
-                self.root.after(0, lambda: messagebox.showinfo(
-                    "🛡️ RANSOMWARE BLOQUEADO",
-                    f"¡Proceso malicioso eliminado!\n\nProceso: {proc_name}\nPID: {pid}\n\n¡Su sistema está protegido!"
-                ))
-
-            except Exception as e:
-                self.log_event(
-                    f"❌ Error eliminando proceso {pid}: {str(e)}", "ERROR")
+            # Mostrar éxito
+            self.root.after(0, lambda: messagebox.showinfo(
+                "🛡️ RANSOMWARE BLOQUEADO",
+                f"¡Amenaza neutralizada con éxito!\n\n"
+                f"Proceso eliminado: {proc_name}\n"
+                f"PID: {pid}\n\n"
+                f"Su sistema está protegido."
+            ))
 
         except Exception as e:
-            self.log_event(f"❌ Error en contención: {str(e)}", "ERROR")
+            self.log_event(
+                f"❌ Error eliminando amenaza {pid}: {str(e)}", "ERROR")
 
-    def show_critical_alert(self, proc_name, pid):
-        """Muestra una alerta crítica de ransomware detectado"""
-        def show_alert():
-            alert_window = tk.Toplevel(self.root)
-            alert_window.title("🚨 ALERTA CRÍTICA")
-            alert_window.geometry("500x300")
-            alert_window.configure(bg="#c0392b")
-            alert_window.attributes("-topmost", True)
+    def show_ransomware_alert(self, file_count):
+        """Alerta visual de ransomware detectado"""
+        alert = tk.Toplevel(self.root)
+        alert.title("🚨 RANSOMWARE DETECTADO")
+        alert.geometry("450x250")
+        alert.configure(bg="#8b0000")
+        alert.attributes("-topmost", True)
 
-            tk.Label(
-                alert_window,
-                text="🚨 RANSOMWARE DETECTADO 🚨",
-                font=("Arial", 20, "bold"),
-                fg="white",
-                bg="#c0392b"
-            ).pack(pady=20)
+        tk.Label(
+            alert,
+            text="🚨 RANSOMWARE DETECTADO 🚨",
+            font=("Arial", 18, "bold"),
+            fg="white",
+            bg="#8b0000"
+        ).pack(pady=20)
 
-            tk.Label(
-                alert_window,
-                text=f"Proceso malicioso identificado:\n{proc_name} (PID: {pid})\n\nSe está procediendo a la contención automática...",
-                font=("Arial", 12),
-                fg="white",
-                bg="#c0392b",
-                wraplength=400
-            ).pack(pady=20)
+        tk.Label(
+            alert,
+            text=f"Se detectaron {file_count} archivos cifrados\n\nEl sistema está respondiendo automáticamente...",
+            font=("Arial", 12),
+            fg="yellow",
+            bg="#8b0000",
+            justify=tk.CENTER
+        ).pack(pady=10)
 
-            tk.Button(
-                alert_window,
-                text="ENTENDIDO",
-                font=("Arial", 14, "bold"),
-                bg="#27ae60",
-                fg="white",
-                relief=tk.FLAT,
-                padx=30,
-                pady=10,
-                command=alert_window.destroy
-            ).pack(pady=20)
+        tk.Button(
+            alert,
+            text="ENTENDIDO",
+            font=("Arial", 12, "bold"),
+            bg="#228b22",
+            fg="white",
+            command=alert.destroy,
+            padx=20
+        ).pack(pady=20)
 
-        self.root.after(0, show_alert)
+    def update_ui_loop(self):
+        """Actualización periódica de la interfaz"""
+        if self.is_monitoring:
+            # Contar archivos cifrados
+            encrypted_count = len(self.scan_for_encrypted_files())
+
+            # Contar procesos con alta CPU (no solo Python)
+            high_cpu_count = len([p for p in psutil.process_iter()
+                                 if p.cpu_percent() > self.HIGH_CPU_THRESHOLD and p.pid != os.getpid()])
+
+            # Amenazas detectadas
+            threat_count = len(self.detected_processes)
+
+            # Actualizar stats
+            self.stats_label.config(
+                text=f"Archivos cifrados: {encrypted_count} | Procesos alta CPU: {high_cpu_count} | Amenazas neutralizadas: {threat_count}"
+            )
+
+            # Repetir cada 2 segundos
+            self.root.after(2000, self.update_ui_loop)
 
     def run(self):
-        """Ejecuta la aplicación"""
+        """Ejecutar el detector"""
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
         self.root.mainloop()
 
     def on_closing(self):
-        """Maneja el cierre de la aplicación"""
+        """Cierre limpio"""
         self.is_monitoring = False
-        self.log_event("👋 Cerrando sistema de detección", "INFO")
+        self.log_event("👋 Detector desactivado")
         self.root.destroy()
 
 
 if __name__ == "__main__":
-    # Verificar permisos de administrador
-    try:
-        import ctypes
-        if ctypes.windll.shell32.IsUserAnAdmin() == 0:
-            print("⚠️ ADVERTENCIA: Se recomienda ejecutar como administrador para acceso completo a logs del sistema")
-    except:
-        pass
+    print("🛡️ Iniciando Detector de Ransomware Optimizado v2.0...")
+    print("⚡ Optimizado para alta velocidad y bajo consumo de recursos")
+    print("🎯 Especializado en detectar cifrado de archivos .locked")
+    print("🚀 Tiempo de respuesta: < 1 segundo")
 
-    print("🛡️ Iniciando Sistema de Detección Autónoma de Ransomware...")
-    print("📋 Monitoreo de:")
-    print("   • Logs de eventos de Windows")
-    print("   • Procesos del sistema")
-    print("   • Patrones de acceso a archivos")
-    print("   • Extensiones de cifrado sospechosas")
-    print("\n🚀 Cargando interfaz gráfica...")
-
-    detector = RansomwareDetector()
+    detector = OptimizedRansomwareDetector()
     detector.run()

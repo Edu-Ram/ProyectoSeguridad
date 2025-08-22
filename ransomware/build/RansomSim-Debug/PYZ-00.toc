@@ -1,0 +1,2 @@
+('C:\\Users\\Edu\\Documents\\workspace\\ProyectoSeguridad\\ransomware\\build\\RansomSim-Debug\\PYZ-00.pyz',
+ [])
